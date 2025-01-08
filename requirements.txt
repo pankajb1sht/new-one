@@ -5,4 +5,7 @@ django-cors-headers==4.2.0
 python-dotenv==1.0.0
 psycopg2-binary==2.9.7
 djangorestframework-simplejwt==5.2.2
-Faker==19.3.0  # For generating test data 
+Faker==19.3.0  # For generating test data
+gunicorn==21.2.0
+whitenoise==6.5.0  # For serving static files
+dj-database-url==2.1.0  # For database URL handling 
