@@ -2,6 +2,7 @@ services:
   - type: web
     name: spam-detector-api
     env: python
+    region: ohio
     buildCommand: pip install -r requirements.txt
     startCommand: >
       python manage.py migrate &&
@@ -30,9 +31,13 @@ services:
         value: "https://new-one-5q6r.onrender.com"
       - key: CSRF_TRUSTED_ORIGINS
         value: "https://new-one-5q6r.onrender.com"
+    autoDeploy: true
+    healthCheckPath: /api/health/
 
 databases:
   - name: spam-detector-db
-    databaseName: spam_detector
-    user: spam_detector
-    plan: free 
+    region: ohio
+    plan: free
+    ipAllowList: []
+    databaseName: spam_detector_prod
+    user: spam_detector_user 
