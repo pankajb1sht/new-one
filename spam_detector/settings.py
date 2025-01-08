@@ -16,7 +16,13 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
+# Update ALLOWED_HOSTS to include render.com domain
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'new-one-5q6r.onrender.com',
+    '.onrender.com',  # Allows all subdomains of onrender.com
+]
 
 # Application definition
 INSTALLED_APPS = [
@@ -216,6 +222,7 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only for development
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://new-one-5q6r.onrender.com",
 ]
 
 # Phone number field settings
@@ -234,4 +241,8 @@ SWAGGER_SETTINGS = {
             'in': 'header'
         }
     }
-} 
+}
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://new-one-5q6r.onrender.com",
+] 
