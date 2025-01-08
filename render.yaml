@@ -6,7 +6,7 @@ services:
     startCommand: >
       python manage.py migrate &&
       python manage.py collectstatic --no-input &&
-      gunicorn spam_detector.wsgi:application
+      gunicorn --bind 0.0.0.0:$PORT spam_detector.wsgi:application
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
@@ -20,6 +20,10 @@ services:
         value: False
       - key: ALLOWED_HOSTS
         value: ".onrender.com"
+      - key: PYTHONPATH
+        value: .
+      - key: PORT
+        value: 8000
 
 databases:
   - name: spam-detector-db
