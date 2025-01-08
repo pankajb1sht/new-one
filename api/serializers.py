@@ -1,61 +1,59 @@
 from rest_framework import serializers
-from django.contrib.auth import get_user_model
-from .models import Contact, SpamReport
-
-User = get_user_model()
+from django.db.models import Count
+from .models import User, Contact, SpamReport
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ('id', 'first_name', 'phone_number', 'email', 'registration_timestamp', 'last_login')
-        read_only_fields = ('registration_timestamp', 'last_login')
+        fields = ('id', 'username', 'phone_number', 'email')
+        extra_kwargs = {
+            'email': {'required': False},
+            'username': {'required': True},
+            'phone_number': {'required': True}
+        }
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
-    
+
     class Meta:
         model = User
-        fields = ('first_name', 'phone_number', 'email', 'password')
+        fields = ('username', 'phone_number', 'email', 'password')
+        extra_kwargs = {
+            'email': {'required': False},
+            'username': {'required': True},
+            'phone_number': {'required': True}
+        }
 
     def create(self, validated_data):
-        user = User.objects.create_user(
-            username=validated_data['phone_number'],
-            first_name=validated_data['first_name'],
-            phone_number=validated_data['phone_number'],
-            email=validated_data.get('email', ''),
-            password=validated_data['password']
-        )
+        user = User.objects.create_user(**validated_data)
         return user
 
 class ContactSerializer(serializers.ModelSerializer):
+    spam_likelihood = serializers.SerializerMethodField()
+
     class Meta:
         model = Contact
-        fields = '__all__'
-        read_only_fields = ('user', 'created_at', 'updated_at')
+        fields = ('id', 'name', 'phone_number', 'spam_likelihood')
 
-    def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user
-        return super().create(validated_data)
+    def get_spam_likelihood(self, obj):
+        total_users = User.objects.count()
+        spam_count = SpamReport.objects.filter(phone_number=obj.phone_number).count()
+        if total_users == 0:
+            return 0
+        return (spam_count / total_users) * 100
+
+class SearchResultSerializer(serializers.ModelSerializer):
+    name = serializers.CharField()
+    phone_number = serializers.CharField()
+    spam_likelihood = serializers.FloatField()
+    email = serializers.EmailField(required=False)
+
+    class Meta:
+        model = Contact
+        fields = ('name', 'phone_number', 'spam_likelihood', 'email')
 
 class SpamReportSerializer(serializers.ModelSerializer):
-    reporter_name = serializers.CharField(source='reporter.first_name', read_only=True)
-    
     class Meta:
         model = SpamReport
-        fields = ('id', 'reported_number', 'reporter', 'reporter_name', 'report_type', 
-                 'details', 'evidence', 'severity', 'timestamp')
-        read_only_fields = ('reporter', 'timestamp')
-
-    def create(self, validated_data):
-        validated_data['reporter'] = self.context['request'].user
-        return super().create(validated_data)
-
-class PhoneNumberSearchSerializer(serializers.Serializer):
-    phone_number = serializers.CharField(max_length=15)
-    name = serializers.CharField(read_only=True)
-    spam_likelihood = serializers.FloatField(read_only=True)
-    report_count = serializers.IntegerField(read_only=True)
-
-class NameSearchSerializer(serializers.Serializer):
-    name = serializers.CharField()
-    results = PhoneNumberSearchSerializer(many=True, read_only=True) 
+        fields = ('id', 'phone_number', 'created_at')
+        read_only_fields = ('created_at',) 

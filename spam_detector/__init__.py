@@ -1,3 +1,0 @@
-"""
-Spam Detector Django Project.
-""" 
