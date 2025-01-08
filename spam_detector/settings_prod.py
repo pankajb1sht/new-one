@@ -1,6 +1,15 @@
 """Production settings for spam_detector project."""
 
 from .settings import *
+import dj_database_url
+
+# Database configuration for Render
+DATABASE_URL = os.getenv('DATABASE_URL')
+if DATABASE_URL:
+    DATABASES['default'] = dj_database_url.config(
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 
 # Security settings
 DEBUG = False
