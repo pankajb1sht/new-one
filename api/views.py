@@ -1,3 +1,4 @@
+import logging
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -5,21 +6,108 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from django.db.models import Q, Count, F
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from .models import Contact, SpamReport
 from .serializers import (
     UserSerializer, UserRegistrationSerializer, ContactSerializer,
     SearchResultSerializer, SpamReportSerializer
 )
 
+logger = logging.getLogger(__name__)
+
 User = get_user_model()
 
 class RegistrationView(APIView):
+    permission_classes = []  # Allow unauthenticated access
+    
     def post(self, request):
-        serializer = UserRegistrationSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        logger.info(f"Registration attempt with data: {request.data}")
+        
+        try:
+            # Validate request data presence
+            if not request.data:
+                logger.error("No data provided in registration request")
+                return Response(
+                    {'error': 'No data provided'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Basic data validation
+            required_fields = ['username', 'password', 'phone_number']
+            missing_fields = [field for field in required_fields if field not in request.data]
+            if missing_fields:
+                logger.error(f"Missing required fields: {missing_fields}")
+                return Response(
+                    {
+                        'error': 'Missing required fields',
+                        'missing_fields': missing_fields
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if username exists
+            if User.objects.filter(username=request.data.get('username')).exists():
+                logger.warning(f"Username already exists: {request.data.get('username')}")
+                return Response(
+                    {'error': 'Username already exists'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if phone number exists
+            if User.objects.filter(phone_number=request.data.get('phone_number')).exists():
+                logger.warning(f"Phone number already exists: {request.data.get('phone_number')}")
+                return Response(
+                    {'error': 'Phone number already registered'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            serializer = UserRegistrationSerializer(data=request.data)
+            if serializer.is_valid():
+                # Create user
+                try:
+                    user = serializer.save()
+                    logger.info(f"Successfully created user: {user.username}")
+                    return Response(
+                        {
+                            'message': 'User created successfully',
+                            'user': serializer.data
+                        },
+                        status=status.HTTP_201_CREATED
+                    )
+                except IntegrityError as e:
+                    logger.error(f"Database integrity error: {str(e)}")
+                    return Response(
+                        {'error': 'Database integrity error occurred'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                except Exception as e:
+                    logger.error(f"Error creating user: {str(e)}")
+                    return Response(
+                        {'error': 'Error creating user'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            
+            logger.error(f"Validation errors: {serializer.errors}")
+            return Response(
+                {
+                    'error': 'Invalid data',
+                    'details': serializer.errors,
+                    'received_data': request.data
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in registration: {str(e)}")
+            return Response(
+                {
+                    'error': 'An unexpected error occurred',
+                    'details': str(e),
+                    'received_data': request.data
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class ContactViewSet(viewsets.ModelViewSet):
     serializer_class = ContactSerializer
@@ -29,7 +117,54 @@ class ContactViewSet(viewsets.ModelViewSet):
         return Contact.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        try:
+            # Check if contact already exists
+            existing_contact = Contact.objects.filter(
+                user=self.request.user,
+                phone_number=serializer.validated_data['phone_number']
+            ).first()
+            
+            if existing_contact:
+                logger.warning(f"Contact already exists for user {self.request.user.username}")
+                raise ValidationError('Contact with this phone number already exists')
+                
+            serializer.save(user=self.request.user)
+            logger.info(f"Contact created successfully for user {self.request.user.username}")
+            
+        except IntegrityError as e:
+            logger.error(f"Database integrity error: {str(e)}")
+            raise ValidationError('Error creating contact: Database integrity error')
+        except Exception as e:
+            logger.error(f"Error creating contact: {str(e)}")
+            raise ValidationError(f'Error creating contact: {str(e)}')
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except ValidationError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error creating contact: {str(e)}")
+            return Response(
+                {'error': 'An unexpected error occurred'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            self.perform_destroy(instance)
+            logger.info(f"Contact deleted successfully by user {request.user.username}")
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            logger.error(f"Error deleting contact: {str(e)}")
+            return Response(
+                {'error': f'Error deleting contact: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class SearchView(APIView):
     permission_classes = [IsAuthenticated]

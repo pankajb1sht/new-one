@@ -8,4 +8,13 @@ djangorestframework-simplejwt==5.2.2
 Faker==19.3.0  # For generating test data
 gunicorn==21.2.0
 whitenoise==6.5.0  # For serving static files
-dj-database-url==2.1.0  # For database URL handling 
+dj-database-url==2.1.0  # For database URL handling
+django-phonenumber-field[phonenumbers]==7.1.0  # For phone number validation
+django-rest-swagger==2.2.0  # For API documentation
+drf-yasg==1.21.7  # For OpenAPI/Swagger documentation
+django-debug-toolbar==4.2.0  # For debugging
+django-extensions==3.2.3  # For development utilities
+django-redis==5.3.0  # For caching
+django-ratelimit==4.1.0  # For rate limiting
+sentry-sdk==1.30.0  # For error tracking
+python-json-logger==2.0.7  # For JSON logging 
