@@ -20,8 +20,9 @@ User = get_user_model()
 
 class RegistrationView(APIView):
     permission_classes = []  # Allow unauthenticated access
+    authentication_classes = []  # No authentication needed for registration
     
-    def post(self, request):
+    def post(self, request, *args, **kwargs):
         logger.info(f"Registration attempt with data: {request.data}")
         
         try:
