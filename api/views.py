@@ -14,6 +14,8 @@ from .serializers import (
     UserSerializer, UserRegistrationSerializer, ContactSerializer,
     SearchResultSerializer, SpamReportSerializer
 )
+from rest_framework.parsers import JSONParser
+from rest_framework_simplejwt.tokens import RefreshToken
 
 logger = logging.getLogger(__name__)
 
@@ -22,24 +24,23 @@ User = get_user_model()
 class RegistrationView(APIView):
     permission_classes = []  # Allow unauthenticated access
     authentication_classes = []  # No authentication needed for registration
+    parser_classes = (JSONParser,)  # Only accept JSON data
     
     def post(self, request, *args, **kwargs):
         logger.info(f"Registration attempt with data: {request.data}")
         
         try:
             # Validate request data presence
-            if not request.data:
-                logger.error("No data provided in registration request")
+            if not isinstance(request.data, dict):
                 return Response(
-                    {'error': 'No data provided'},
+                    {'error': 'Invalid data format. JSON object expected'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
             # Basic data validation
             required_fields = ['username', 'password', 'phone_number']
-            missing_fields = [field for field in required_fields if field not in request.data]
+            missing_fields = [field for field in required_fields if not request.data.get(field)]
             if missing_fields:
-                logger.error(f"Missing required fields: {missing_fields}")
                 return Response(
                     {
                         'error': 'Missing required fields',
@@ -48,17 +49,21 @@ class RegistrationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Validate phone number format
+            phone_number = request.data.get('phone_number')
+            if not phone_number.startswith('+'):
+                phone_number = '+' + phone_number
+                request.data['phone_number'] = phone_number
+
             # Check if username exists
             if User.objects.filter(username=request.data.get('username')).exists():
-                logger.warning(f"Username already exists: {request.data.get('username')}")
                 return Response(
                     {'error': 'Username already exists'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
             # Check if phone number exists
-            if User.objects.filter(phone_number=request.data.get('phone_number')).exists():
-                logger.warning(f"Phone number already exists: {request.data.get('phone_number')}")
+            if User.objects.filter(phone_number=phone_number).exists():
                 return Response(
                     {'error': 'Phone number already registered'},
                     status=status.HTTP_400_BAD_REQUEST
@@ -66,36 +71,25 @@ class RegistrationView(APIView):
 
             serializer = UserRegistrationSerializer(data=request.data)
             if serializer.is_valid():
-                # Create user
-                try:
-                    user = serializer.save()
-                    logger.info(f"Successfully created user: {user.username}")
-                    return Response(
-                        {
-                            'message': 'User created successfully',
-                            'user': serializer.data
-                        },
-                        status=status.HTTP_201_CREATED
-                    )
-                except IntegrityError as e:
-                    logger.error(f"Database integrity error: {str(e)}")
-                    return Response(
-                        {'error': 'Database integrity error occurred'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                except Exception as e:
-                    logger.error(f"Error creating user: {str(e)}")
-                    return Response(
-                        {'error': 'Error creating user'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+                user = serializer.save()
+                # Get tokens for the user
+                refresh = RefreshToken.for_user(user)
+                return Response(
+                    {
+                        'message': 'User created successfully',
+                        'user': serializer.data,
+                        'tokens': {
+                            'refresh': str(refresh),
+                            'access': str(refresh.access_token),
+                        }
+                    },
+                    status=status.HTTP_201_CREATED
+                )
             
-            logger.error(f"Validation errors: {serializer.errors}")
             return Response(
                 {
                     'error': 'Invalid data',
-                    'details': serializer.errors,
-                    'received_data': request.data
+                    'details': serializer.errors
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -105,8 +99,7 @@ class RegistrationView(APIView):
             return Response(
                 {
                     'error': 'An unexpected error occurred',
-                    'details': str(e),
-                    'received_data': request.data
+                    'details': str(e)
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -177,53 +170,98 @@ class SearchView(APIView):
         return (spam_count / total_users) * 100 if total_users > 0 else 0
 
     def get(self, request):
-        query = request.query_params.get('q', '')
-        search_type = request.query_params.get('type', 'name')
-        
-        if not query:
-            return Response({"error": "Query parameter 'q' is required"}, 
-                          status=status.HTTP_400_BAD_REQUEST)
+        try:
+            query = request.query_params.get('q', '').strip()
+            search_type = request.query_params.get('type', 'name').lower()
 
-        results = []
-        if search_type == 'name':
-            # First get exact matches
-            contacts = Contact.objects.filter(name__istartswith=query)
-            # Then get partial matches
-            contacts = contacts.union(
-                Contact.objects.filter(name__icontains=query)
-                .exclude(name__istartswith=query)
+            if not query:
+                return Response(
+                    {"error": "Query parameter 'q' is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if search_type not in ['name', 'phone']:
+                return Response(
+                    {"error": "Search type must be either 'name' or 'phone'"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            results = []
+            if search_type == 'name':
+                # First get exact matches
+                contacts = Contact.objects.filter(
+                    Q(name__iexact=query) |
+                    Q(name__istartswith=query)
+                ).distinct()
+
+                # Then get partial matches
+                if not contacts.exists():
+                    contacts = Contact.objects.filter(
+                        name__icontains=query
+                    ).exclude(
+                        Q(name__iexact=query) |
+                        Q(name__istartswith=query)
+                    ).distinct()
+
+            else:  # phone search
+                # Clean phone number
+                if not query.startswith('+'):
+                    query = '+' + query
+
+                # First check registered users
+                registered_user = User.objects.filter(phone_number=query).first()
+                if registered_user:
+                    # Return only registered user if found
+                    results.append({
+                        'name': registered_user.username,
+                        'phone_number': registered_user.phone_number,
+                        'spam_likelihood': self.get_spam_likelihood(query),
+                        'email': registered_user.email if Contact.objects.filter(
+                            user=request.user,
+                            phone_number=query
+                        ).exists() else None,
+                        'is_registered': True
+                    })
+                    return Response(results)
+
+                # If no registered user found, search contacts
+                contacts = Contact.objects.filter(phone_number=query).distinct()
+
+            # Process contacts
+            seen_numbers = set()
+            for contact in contacts:
+                if contact.phone_number in seen_numbers:
+                    continue
+                seen_numbers.add(contact.phone_number)
+
+                result = {
+                    'name': contact.name,
+                    'phone_number': contact.phone_number,
+                    'spam_likelihood': self.get_spam_likelihood(contact.phone_number),
+                    'is_registered': False
+                }
+
+                # Check if this contact is a registered user
+                registered_user = User.objects.filter(phone_number=contact.phone_number).first()
+                if registered_user:
+                    result['is_registered'] = True
+                    # Add email only if the searcher is in their contacts
+                    if Contact.objects.filter(
+                        user=registered_user,
+                        phone_number=request.user.phone_number
+                    ).exists():
+                        result['email'] = registered_user.email
+
+                results.append(result)
+
+            return Response(results)
+
+        except Exception as e:
+            logger.error(f"Search error: {str(e)}")
+            return Response(
+                {'error': 'An error occurred during search'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        else:  # phone search
-            registered_user = User.objects.filter(phone_number=query).first()
-            if registered_user:
-                # If registered user found, only return that
-                results.append({
-                    'name': registered_user.username,
-                    'phone_number': registered_user.phone_number,
-                    'spam_likelihood': self.get_spam_likelihood(query),
-                    'email': registered_user.email if Contact.objects.filter(
-                        user=request.user, phone_number=query).exists() else None
-                })
-                return Response(results)
-            else:
-                # Otherwise return all matching contacts
-                contacts = Contact.objects.filter(phone_number=query)
-
-        for contact in contacts:
-            result = {
-                'name': contact.name,
-                'phone_number': contact.phone_number,
-                'spam_likelihood': self.get_spam_likelihood(contact.phone_number),
-            }
-            
-            # Add email only if the contact is a registered user and the searcher is in their contacts
-            user = User.objects.filter(phone_number=contact.phone_number).first()
-            if user and Contact.objects.filter(user=user, phone_number=request.user.phone_number).exists():
-                result['email'] = user.email
-            
-            results.append(result)
-
-        return Response(results)
 
 class SpamViewSet(viewsets.ModelViewSet):
     serializer_class = SpamReportSerializer
@@ -232,24 +270,99 @@ class SpamViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return SpamReport.objects.filter(reported_by=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        try:
+            # Clean phone number
+            phone_number = request.data.get('phone_number', '').strip()
+            if not phone_number:
+                return Response(
+                    {"error": "Phone number is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if not phone_number.startswith('+'):
+                phone_number = '+' + phone_number
+                request.data['phone_number'] = phone_number
+
+            # Check if already reported
+            if SpamReport.objects.filter(
+                reported_by=request.user,
+                phone_number=phone_number
+            ).exists():
+                return Response(
+                    {"error": "You have already reported this number"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+
+            # Get updated spam stats
+            total_users = User.objects.count()
+            spam_count = SpamReport.objects.filter(phone_number=phone_number).count()
+            spam_likelihood = (spam_count / total_users) * 100 if total_users > 0 else 0
+
+            return Response({
+                'message': 'Number reported as spam successfully',
+                'phone_number': phone_number,
+                'spam_likelihood': spam_likelihood,
+                'total_reports': spam_count
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.error(f"Error reporting spam: {str(e)}")
+            return Response(
+                {'error': 'An error occurred while reporting spam'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     def perform_create(self, serializer):
         serializer.save(reported_by=self.request.user)
 
     @action(detail=False, methods=['get'])
     def check(self, request):
-        phone_number = request.query_params.get('phone_number')
-        if not phone_number:
-            return Response({"error": "phone_number parameter is required"}, 
-                          status=status.HTTP_400_BAD_REQUEST)
-        
-        total_users = User.objects.count()
-        spam_count = SpamReport.objects.filter(phone_number=phone_number).count()
-        
-        return Response({
-            'phone_number': phone_number,
-            'spam_likelihood': (spam_count / total_users) * 100 if total_users > 0 else 0,
-            'total_reports': spam_count
-        }) 
+        try:
+            phone_number = request.query_params.get('phone_number', '').strip()
+            if not phone_number:
+                return Response(
+                    {"error": "phone_number parameter is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Clean phone number
+            if not phone_number.startswith('+'):
+                phone_number = '+' + phone_number
+
+            total_users = User.objects.count()
+            spam_reports = SpamReport.objects.filter(phone_number=phone_number)
+            spam_count = spam_reports.count()
+            
+            # Get recent reporters
+            recent_reporters = []
+            if spam_count > 0:
+                recent_reporters = [
+                    {
+                        'username': report.reported_by.username,
+                        'date': report.created_at
+                    }
+                    for report in spam_reports.order_by('-created_at')[:5]
+                ]
+
+            return Response({
+                'phone_number': phone_number,
+                'spam_likelihood': (spam_count / total_users) * 100 if total_users > 0 else 0,
+                'total_reports': spam_count,
+                'recent_reporters': recent_reporters,
+                'is_reported_by_you': spam_reports.filter(reported_by=request.user).exists()
+            })
+
+        except Exception as e:
+            logger.error(f"Error checking spam: {str(e)}")
+            return Response(
+                {'error': 'An error occurred while checking spam status'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
